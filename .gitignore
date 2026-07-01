@@ -109,3 +109,7 @@ venv.bak/
 
 # idea
 .idea/*
+
+# Windows deployment artifacts (local only)
+bin/
+logs/

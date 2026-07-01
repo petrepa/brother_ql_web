@@ -35,9 +35,16 @@ class Fonts:
                 pass
 
     def scan_global_fonts(self):
-        """ Get a list of all fonts that are available to the user who runs this
-        :return: raw output of the command fc-list
+        """ Populate the font list from the system.
+
+        On Linux/macOS this uses fontconfig (``fc-list``). On Windows, where
+        fontconfig is normally absent, it enumerates the system and per-user
+        font folders directly and reads each font's family/style with Pillow.
         """
+        if sys.platform == 'win32':
+            self.scan_windows_fonts()
+            return
+
         command = ['fc-list']
         try:
             raw = subprocess.run(command, stdout=subprocess.PIPE)
@@ -46,6 +53,29 @@ class Fonts:
             sys.exit(2)
 
         self.parse_fonts(raw)
+
+    def scan_windows_fonts(self):
+        """ Enumerate TrueType/OpenType fonts from the Windows font folders and
+        read their family/style names via Pillow (no fontconfig dependency). """
+        import os
+        import glob
+        from PIL import ImageFont
+
+        folders = [os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')]
+        local_appdata = os.environ.get('LOCALAPPDATA')
+        if local_appdata:
+            folders.append(os.path.join(
+                local_appdata, 'Microsoft', 'Windows', 'Fonts'))
+
+        for folder in folders:
+            for pattern in ('*.ttf', '*.otf', '*.ttc'):
+                for path in glob.glob(os.path.join(folder, pattern)):
+                    try:
+                        family, style = ImageFont.truetype(path).getname()
+                    except Exception:
+                        continue
+                    if family:
+                        self.fonts[family][style or 'Regular'] = path
 
     def scan_fonts_folder(self, folder):
         """ Get a list of all fonts that are available to the user who runs this
