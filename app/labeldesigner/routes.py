@@ -34,6 +34,7 @@ def index():
                            red_support=RED_SUPPORT,
                            default_label_size=current_app.config['LABEL_DEFAULT_SIZE'],
                            default_font_size=current_app.config['LABEL_DEFAULT_FONT_SIZE'],
+                           default_font_size_auto=current_app.config['LABEL_DEFAULT_FONT_SIZE_AUTO'],
                            default_orientation=current_app.config['LABEL_DEFAULT_ORIENTATION'],
                            default_qr_size=current_app.config['LABEL_DEFAULT_QR_SIZE'],
                            default_image_mode=current_app.config['IMAGE_DEFAULT_MODE'],
@@ -67,11 +68,13 @@ def get_preview_from_image():
         import base64
         response = make_response(base64.b64encode(image_to_png_bytes(im)))
         response.headers.set('Content-type', 'text/plain')
-        return response
     else:
         response = make_response(image_to_png_bytes(im))
         response.headers.set('Content-type', 'image/png')
-        return response
+
+    # Lets the UI show which size auto-fit settled on.
+    response.headers.set('X-Font-Size', str(label.effective_font_size))
+    return response
 
 
 @bp.route('/api/print', methods=['POST', 'GET'])
@@ -141,6 +144,7 @@ def create_label_from_request(request):
         'image_mode': d.get('image_mode', "grayscale"),
         'image_bw_threshold': int(d.get('image_bw_threshold', 70)),
         'font_size': int(d.get('font_size', 100)),
+        'font_size_auto': d.get('font_size_auto', '0') in ('1', 'true', 'on'),
         'line_spacing': int(d.get('line_spacing', 100)),
         'font_family': d.get('font_family'),
         'font_style': d.get('font_style'),
@@ -220,10 +224,10 @@ def create_label_from_request(request):
         label_orientation=label_orientation,
         label_type=label_type,
         label_margin=(
-            int(context['font_size']*context['margin_left']),
-            int(context['font_size']*context['margin_right']),
-            int(context['font_size']*context['margin_top']),
-            int(context['font_size']*context['margin_bottom'])
+            context['margin_left'],
+            context['margin_right'],
+            context['margin_top'],
+            context['margin_bottom']
         ),
         fore_color=
             (255, 0, 0) if 'red' in context['label_size'] and context['print_color'] == 'red'
@@ -235,5 +239,6 @@ def create_label_from_request(request):
         image=get_uploaded_image(request.files.get('image', None)),
         font_path=get_font_path(context['font_family'], context['font_style']),
         font_size=context['font_size'],
+        font_size_auto=context['font_size_auto'],
         line_spacing=context['line_spacing']
     )

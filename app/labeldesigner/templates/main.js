@@ -6,6 +6,7 @@ function formData(cut_once) {
         font_family: $('#fontFamily option:selected').text(),
         font_style:  $('#fontStyle option:selected').text(),
         font_size:   $('#fontSize').val(),
+        font_size_auto: $('#fontSizeAuto').is(':checked') ? 1 : 0,
         label_size:  $('#labelSize option:selected').val(),
         align:       $('input[name=fontAlign]:checked').val(),
         orientation: $('input[name=orientation]:checked').val(),
@@ -92,6 +93,12 @@ function preview() {
         $('#groupLabelImage').hide();
     }
 
+    var autoFontSize = $('#fontSizeAuto').is(':checked');
+    $('#fontSizeLabel').text(autoFontSize ? 'Max Font Size:' : 'Font Size:');
+    if (!autoFontSize) {
+        $('#fontSizeAutoResult').text('');
+    }
+
     if($('input[name=printType]:checked').val() == 'image') {
         dropZoneMode = 'preview';
         imageDropZone.processQueue();
@@ -103,8 +110,12 @@ function preview() {
         url:         '{{url_for('.get_preview_from_image')}}?return_format=base64',
         contentType: 'application/x-www-form-urlencoded; charset=UTF-8',
         data:        formData(),
-        success: function( data ) {
+        success: function( data, textStatus, jqXHR ) {
             updatePreview(data);
+            if (autoFontSize) {
+                var used = jqXHR.getResponseHeader('X-Font-Size');
+                $('#fontSizeAutoResult').text(used ? '(using ' + used + ')' : '');
+            }
         }
     });
 }

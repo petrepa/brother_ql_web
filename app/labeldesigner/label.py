@@ -28,6 +28,11 @@ class TextAlign(Enum):
     RIGHT = 'right'
 
 
+# Smallest font size the auto-fit search is allowed to fall back to. Below this
+# the print is unreadable anyway, so we stop shrinking and let the text clip.
+FONT_SIZE_MIN = 4
+
+
 class SimpleLabel:
     qr_correction_mapping = {
         'L': constants.ERROR_CORRECT_L,
@@ -43,7 +48,8 @@ class SimpleLabel:
             label_content=LabelContent.TEXT_ONLY,
             label_orientation=LabelOrientation.STANDARD,
             label_type=LabelType.ENDLESS_LABEL,
-            label_margin=(0, 0, 0, 0),  # Left, Right, Top, Bottom
+            # Left, Right, Top, Bottom, each as a fraction of the font size
+            label_margin=(0, 0, 0, 0),
             fore_color=(0, 0, 0),  # Red, Green, Blue
             text='',
             text_align=TextAlign.CENTER,
@@ -53,6 +59,7 @@ class SimpleLabel:
             image=None,
             font_path='',
             font_size=70,
+            font_size_auto=False,
             line_spacing=100):
         self._width = width
         self._height = height
@@ -68,7 +75,11 @@ class SimpleLabel:
         self._image = image
         self._font_path = font_path
         self._font_size = font_size
+        self._font_size_auto = font_size_auto
         self._line_spacing = line_spacing
+        # Size actually used by the last generate(); equals _font_size unless
+        # auto-fit shrank it.
+        self._effective_font_size = font_size
 
     @property
     def label_content(self):
@@ -113,6 +124,11 @@ class SimpleLabel:
     def label_type(self, value):
         self._label_type = value
 
+    @property
+    def effective_font_size(self):
+        """Font size used by the most recent generate() call."""
+        return self._effective_font_size
+
     def generate(self):
         if self._label_content in (LabelContent.QRCODE_ONLY, LabelContent.TEXT_QRCODE):
             img = self._generate_qr()
@@ -126,13 +142,23 @@ class SimpleLabel:
         else:
             img_width, img_height = (0, 0)
 
-        if self._label_content in (LabelContent.TEXT_ONLY, LabelContent.TEXT_QRCODE):
-            textsize = self._get_text_size()
+        has_text = self._label_content in (
+            LabelContent.TEXT_ONLY, LabelContent.TEXT_QRCODE)
+
+        if has_text and self._font_size_auto:
+            font_size = self._fit_font_size(img_width, img_height)
+        else:
+            font_size = self._font_size
+        self._effective_font_size = font_size
+
+        if has_text:
+            textsize = self._get_text_size(font_size)
         else:
             textsize = (0, 0, 0, 0)
 
         width, height = self._width, self._height
-        margin_left, margin_right, margin_top, margin_bottom = self._label_margin
+        margin_left, margin_right, margin_top, margin_bottom = self._margins(
+            font_size)
 
         if self._label_orientation == LabelOrientation.STANDARD:
             if self._label_type in (LabelType.ENDLESS_LABEL,):
@@ -172,15 +198,15 @@ class SimpleLabel:
         if img is not None:
             imgResult.paste(img, image_offset)
 
-        if self._label_content in (LabelContent.TEXT_ONLY, LabelContent.TEXT_QRCODE):
+        if has_text:
             draw = ImageDraw.Draw(imgResult)
             draw.multiline_text(
                 text_offset,
                 self._prepare_text(self._text),
                 self._fore_color,
-                font=self._get_font(),
+                font=self._get_font(font_size),
                 align=self._text_align,
-                spacing=int(self._font_size*((self._line_spacing - 100) / 100)))
+                spacing=self._line_spacing_px(font_size))
 
         return imgResult
 
@@ -198,8 +224,72 @@ class SimpleLabel:
             back_color="white")
         return qr_img
 
-    def _get_text_size(self):
-        font = self._get_font()
+    def _fit_font_size(self, img_width, img_height):
+        """Largest font size <= the requested one whose text still fits the
+        label's fixed dimensions.
+
+        Binary search: everything that consumes space (glyphs, line spacing and
+        the margins, which are a fraction of the font size) grows monotonically
+        with the font size, so 'fits' flips exactly once over the range.
+        """
+        low, high = FONT_SIZE_MIN, max(FONT_SIZE_MIN, self._font_size)
+
+        if self._fits(high, img_width, img_height):
+            return high
+
+        while low < high:
+            mid = (low + high + 1) // 2
+            if self._fits(mid, img_width, img_height):
+                low = mid
+            else:
+                high = mid - 1
+
+        return low
+
+    def _fits(self, font_size, img_width, img_height):
+        """True if the text rendered at font_size stays inside every label
+        dimension that is fixed.
+
+        Endless labels grow along one axis, so only the other one constrains
+        us: standard orientation grows in height, rotated grows in width.
+        """
+        margin_left, margin_right, margin_top, margin_bottom = self._margins(
+            font_size)
+        bbox = self._get_text_size(font_size)
+        text_width = bbox[2]
+        text_height = bbox[3] - bbox[1]
+
+        endless = self._label_type == LabelType.ENDLESS_LABEL
+
+        if self._label_orientation == LabelOrientation.STANDARD:
+            # Image sits above the text, and left/right margins are unused.
+            width_constrained = True
+            height_constrained = not endless
+            needed_width = max(text_width, img_width)
+            needed_height = img_height + text_height + margin_top + margin_bottom
+        else:
+            # Image sits left of the text, both vertically centered.
+            width_constrained = not endless
+            height_constrained = True
+            needed_width = img_width + text_width + margin_left + margin_right
+            needed_height = max(
+                img_height, text_height + margin_top + margin_bottom)
+
+        if width_constrained and needed_width > self._width:
+            return False
+        if height_constrained and needed_height > self._height:
+            return False
+        return True
+
+    def _margins(self, font_size):
+        """Margins in pixels; they are stored as a fraction of the font size."""
+        return tuple(int(font_size * fraction) for fraction in self._label_margin)
+
+    def _line_spacing_px(self, font_size):
+        return int(font_size*((self._line_spacing - 100) / 100))
+
+    def _get_text_size(self, font_size):
+        font = self._get_font(font_size)
         img = Image.new('L', (20, 20), 'white')
         draw = ImageDraw.Draw(img)
         return draw.multiline_textbbox(
@@ -207,7 +297,7 @@ class SimpleLabel:
             self._prepare_text(self._text),
             font=font,
             align=self._text_align,
-            spacing=int(self._font_size*((self._line_spacing - 100) / 100)))
+            spacing=self._line_spacing_px(font_size))
 
     @staticmethod
     def _prepare_text(text):
@@ -220,5 +310,5 @@ class SimpleLabel:
             lines.append(line)
         return '\n'.join(lines)
 
-    def _get_font(self):
-        return ImageFont.truetype(self._font_path, self._font_size)
+    def _get_font(self, font_size):
+        return ImageFont.truetype(self._font_path, font_size)
